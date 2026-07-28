@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Money RSS Feeds — 中国聪明资金情报</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; background: #f8f9fa; color: #333; }
+        h1 { color: #1a1a2e; border-bottom: 3px solid #e94560; padding-bottom: 10px; }
+        .feed { background: #fff; border-radius: 8px; padding: 16px 20px; margin: 12px 0; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .feed h3 { margin: 0 0 6px; }
+        .feed h3 a { color: #e94560; text-decoration: none; }
+        .feed p { margin: 4px 0 0; color: #666; font-size: 14px; }
+        .tag { display: inline-block; background: #e8e8e8; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 6px; }
+        .updated { color: #999; font-size: 12px; margin-top: 40px; }
+    </style>
+</head>
+<body>
+    <h1>Smart Money RSS Feeds</h1>
+    <p>中国A股聪明资金情报订阅源，每日自动更新。</p>
+
+    <div class="feed">
+        <h3><a href="./northbound.xml">北向资金每日流向</a></h3>
+        <p><span class="tag">沪股通</span><span class="tag">深股通</span>外资通过沪深港通每日净买入/卖出数据，含前十大活跃个股明细。</p>
+    </div>
+
+    <div class="feed">
+        <h3><a href="./insider.xml">大股东增减持</a></h3>
+        <p><span class="tag">高管交易</span><span class="tag">大股东变动</span>A股上市公司大股东、董监高、5%以上股东持股变动实时披露。</p>
+    </div>
+
+    <div class="feed">
+        <h3><a href="./dragon-tiger.xml">龙虎榜 — 机构席位</a></h3>
+        <p><span class="tag">机构专用</span><span class="tag">龙虎榜</span>每日龙虎榜中机构专用席位的买卖数据，追踪机构资金方向。</p>
+    </div>
+
+    <div class="feed">
+        <h3><a href="./fund-holdings.xml">公募基金重仓变动</a></h3>
+        <p><span class="tag">基金持仓</span><span class="tag">季度调仓</span>公募基金季度重仓股变化，追踪主流基金管理人的配置方向。</p>
+    </div>
+
+    <div class="feed">
+        <h3><a href="./market-heat.xml">市场热度: 成交额+融资融券</a></h3>
+        <p><span class="tag">两市成交</span><span class="tag">融资余额</span><span class="tag">杠杆资金</span>每日A股市场热度指标：沪市/深市成交额、两市合计、融资买入、融券余额。用于判断市场情绪顶底。</p>
+    </div>
+
+    <p class="updated">数据来源: AKShare / 东方财富 / 上交所 / 深交所 | 每日 ~16:30 CST 自动更新</p>
+    <p class="updated">CSV历史数据永久累积保存: <a href="./csv/">csv/</a> 目录（每天数据追加，不覆盖）</p>
+</body>
+</html>
