@@ -199,16 +199,14 @@ def generate_northbound_rss():
                 direction = "净买入" if total_net > 0 else "净卖出"
 
             title = f"北向资金 {TODAY_STR}: {direction} {abs(total_net) if total_net else '—'} 亿 | 沪{sh_idx_chg} 深{sz_idx_chg}"
-            desc_parts = [
-                f"北向资金 {TODAY_STR}",
-                f"沪股通: 净流入 {sh_net} 亿 | 成交 {float(sh_amount)/100000000:.1f} 亿 | 涨{sh_up}/跌{sh_down}",
-                f"深股通: 净流入 {sz_net} 亿 | 成交 {float(sz_amount)/100000000:.1f} 亿 | 涨{sz_up}/跌{sz_down}",
-                f"上证({sh_idx}): {sh_idx_chg}",
-                f"深证({sz_idx}): {sz_idx_chg}"
-            ]
+            desc_parts = [f"<b>北向资金 {TODAY_STR}</b>"]
+            desc_parts.append(f"沪股通: 净流入 {sh_net} 亿 | 成交 {float(sh_amount)/100000000:.1f} 亿")
+            desc_parts.append(f"深股通: 净流入 {sz_net} 亿 | 成交 {float(sz_amount)/100000000:.1f} 亿")
             if total_net is not None:
                 label = "净买入" if total_net > 0 else "净卖出"
-                desc_parts.append(f"合计: {label} {abs(total_net):.2f} 亿")
+                desc_parts.append(f"<b>合计: {label} {abs(total_net):.2f} 亿</b>")
+            desc_parts.append(f"上证: {sh_idx} ({sh_idx_chg}) | 深证: {sz_idx} ({sz_idx_chg})")
+            desc_parts.append(f"涨跌家数: 沪涨{sh_up}/跌{sh_down} | 深涨{sz_up}/跌{sz_down}")
 
             items.append({
                 "title": escape_xml(title),
@@ -260,17 +258,17 @@ def generate_northbound_rss():
                 direction_h = "净买入" if float(net_buy) > 0 else "净卖出"
                 title_parts.append(f"{direction_h} {abs(float(net_buy)):.1f} 亿")
 
-            desc_parts_hist = [f"历史: {date_val}"]
+            # Compact description
+            desc_parts_hist = [f"<b>北向资金 {date_val}</b>"]
             if not pd.isna(net_buy):
-                desc_parts_hist.append(f"当日成交净买额: {float(net_buy):.2f} 亿")
+                d = "净买入" if float(net_buy) > 0 else "净卖出"
+                desc_parts_hist.append(f"<b>{d} {abs(float(net_buy)):.2f} 亿</b>")
             if not pd.isna(buy_amount):
-                desc_parts_hist.append(f"买入成交额: {float(buy_amount):.2f} 亿")
-            if not pd.isna(sell_amount):
-                desc_parts_hist.append(f"卖出成交额: {float(sell_amount):.2f} 亿")
-            if not pd.isna(market_value):
-                desc_parts_hist.append(f"持股市值: {float(market_value):.2f} 亿")
+                desc_parts_hist.append(f"买入: {float(buy_amount):.1f} 亿 | 卖出: {float(sell_amount):.1f} 亿")
+            if not pd.isna(market_value) and float(market_value) > 0:
+                desc_parts_hist.append(f"持股市值: {float(market_value):.1f} 亿")
             if leading_stock and str(leading_stock) != "nan":
-                desc_parts_hist.append(f"领涨股: {leading_stock} ({leading_change})")
+                desc_parts_hist.append(f"领涨: {leading_stock} ({leading_change})")
             if hs300 and str(hs300) != "nan":
                 desc_parts_hist.append(f"沪深300: {hs300} ({hs300_chg})")
 
@@ -385,22 +383,51 @@ def generate_insider_rss():
             try:
                 change_num = float(change_amount) / 10000
             except (ValueError, TypeError):
-                change_num = change_amount
+                change_num = 0
 
             direction_label = {"增持": "增持", "减持": "减持"}.get(direction, direction)
 
-            title = f"[{direction_label}] {name}({code}) — {shareholder} 变动{change_num:.2f}万股"
-            desc_parts = [
-                f"公司: {name} ({code})",
-                f"股东/高管: {shareholder}",
-                f"变动方向: {direction}",
-                f"变动数量: {change_num:.2f} 万股",
-                f"最新价: {price}",
-                f"占总股本: {pct_total}%",
-                f"占流通股: {pct_float}%",
-            ]
+            # Build title based on whether there's actual change data
+            if change_num > 0:
+                arrow = "▲" if direction_label == "增持" else "▼"
+                title = f"[{arrow}{direction_label}] {name}({code}) — {shareholder} 变动{change_num:.2f}万股"
+            else:
+                title = f"[变动待确认] {name}({code}) — {shareholder}"
+
+            # Compact description with only key info
+            desc_parts = [f"<b>{name} ({code})</b> | {shareholder}"]
+            if change_num > 0:
+                arrow = "▲" if direction_label == "增持" else "▼"
+                desc_parts.append(f"<b>{arrow} {direction_label} {change_num:.2f} 万股</b>")
+            else:
+                desc_parts.append("<i>变动数量待确认或数据未披露</i>")
+
+            if price and str(price) not in ("nan", "NaT", ""):
+                try:
+                    p = float(price)
+                    desc_parts.append(f"最新价: ¥{p:.2f}")
+                except (ValueError, TypeError):
+                    pass
+
+            if pct_total and str(pct_total) not in ("nan", "NaT", ""):
+                try:
+                    pt = float(pct_total)
+                    if pt > 0:
+                        desc_parts.append(f"占总股本: {pt:.4f}%")
+                except (ValueError, TypeError):
+                    pass
+
+            if pct_float and str(pct_float) not in ("nan", "NaT", ""):
+                try:
+                    pf = float(pct_float)
+                    if pf > 0:
+                        desc_parts.append(f"占流通股: {pf:.4f}%")
+                except (ValueError, TypeError):
+                    pass
+
             if announce_date and str(announce_date) != "NaT":
-                desc_parts.append(f"公告日: {announce_date}")
+                ad = str(announce_date).split(" ")[0] if " " in str(announce_date) else str(announce_date)
+                desc_parts.append(f"公告日: {ad}")
 
             link = ""
             if str(code).startswith(("6", "9")):
@@ -503,15 +530,14 @@ def generate_dragon_tiger_rss():
 
             title = f"[{direction_label} {abs_net:.2f}亿] {name}({code}) 涨{pct_chg}% | {seat_date}"
 
-            desc_parts = [
-                f"龙虎榜: {name} ({code})",
-                f"上榜日期: {seat_date}",
-                f"收盘价: {close} | 涨跌幅: {pct_chg}%",
-                f"买方机构: {buy_inst_count}家 | 卖方机构: {sell_inst_count}家",
-                f"机构买入: {buy_total_yi:.2f}亿 | 机构卖出: {sell_total_yi:.2f}亿",
-                f"机构净买入: {net_buy_yi:.2f}亿",
-                f"信号: 机构席位{'积极买入' if net_buy_yi > 0 else '主动卖出'}",
-            ]
+            desc_parts = [f"<b>{name} ({code})</b> | 收盘价 {close} | 涨跌幅 {pct_chg}%"]
+            desc_parts.append(f"<b>机构{direction_label} {abs_net:.2f} 亿</b>")
+            desc_parts.append(f"买方机构 {buy_inst_count} 家 | 卖方机构 {sell_inst_count} 家")
+            desc_parts.append(f"机构买入 {buy_total_yi:.2f} 亿 | 机构卖出 {sell_total_yi:.2f} 亿")
+            if net_buy_yi > 0:
+                desc_parts.append("信号: 机构席位积极买入")
+            else:
+                desc_parts.append("信号: 机构席位主动卖出")
 
             link = f"https://data.eastmoney.com/stock/lhb,{code}.html"
 
@@ -606,15 +632,15 @@ def generate_fund_holdings_rss():
                     pct = row.get("占净值比例", row.get("持仓占比", "?"))
                     holdings.append(f"{sname}({pct}%)")
 
-                title = f"{fund_name}({fund_code}) {current_quarter}重仓: TOP5={', '.join(holdings)}"
-                desc_parts = [f"基金: {fund_name} ({fund_code}) | {current_quarter}"]
+                title = f"{fund_name}({fund_code}) {current_quarter}重仓TOP5"
+                desc_parts = [f"<b>{fund_name} ({fund_code}) | {current_quarter}</b>"]
 
-                for _, row in top5.iterrows():
+                for idx, (_, row) in enumerate(top5.iterrows(), 1):
                     stock_name = row.get("股票名称", row.get("名称", "?"))
                     weight = row.get("占净值比例", row.get("持仓占比", "?"))
-                    shares = row.get("持股数", row.get("持仓数量", "?"))
                     value = row.get("持仓市值", "?")
-                    desc_parts.append(f"  {stock_name}: 权重{weight}% | 持股市值{value}")
+                    shares = row.get("持股数", row.get("持仓数量", "?"))
+                    desc_parts.append(f"{idx}. {stock_name}: 权重{weight}% | 市值{value}")
 
                     csv_rows.append({
                         "抓取日期": TODAY_STR,
@@ -776,16 +802,13 @@ def generate_market_heat_rss():
         except (ValueError, TypeError):
             heat = "数据暂缺"
 
-        title = f"市场热度 {TODAY_STR}: 两市成交 {total_vol} 亿 | 两融余额 {margin_bal} 亿 | {heat.partition('—')[0].strip()}"
+        title = f"市场热度 {TODAY_STR}: 两市成交 {total_vol} 亿 | 两融 {margin_bal} 亿 | {heat.partition('—')[0].strip()}"
         desc_parts = [
-            f"市场热度指标 — {TODAY_STR}",
-            f"沪市成交额: {csv_row.get('沪市成交额_亿', 'N/A')} 亿",
-            f"深市成交额: {csv_row.get('深市成交额_亿', 'N/A')} 亿",
-            f"两市合计: {total_vol} 亿",
-            f"融资余额: {csv_row.get('融资余额_亿', 'N/A')} 亿",
-            f"融资买入额: {csv_row.get('融资买入额_亿', 'N/A')} 亿",
-            f"融券余额: {csv_row.get('融券余额_亿', 'N/A')} 亿",
-            f"融资融券余额: {margin_bal} 亿",
+            f"<b>市场热度 {TODAY_STR}</b>",
+            f"沪市: {csv_row.get('沪市成交额_亿', 'N/A')} 亿 | 深市: {csv_row.get('深市成交额_亿', 'N/A')} 亿",
+            f"<b>两市合计: {total_vol} 亿</b>",
+            f"融资余额: {csv_row.get('融资余额_亿', 'N/A')} 亿 | 融资买入: {csv_row.get('融资买入额_亿', 'N/A')} 亿",
+            f"融券余额: {csv_row.get('融券余额_亿', 'N/A')} 亿 | 两融合计: {margin_bal} 亿",
             f"判断: {heat}",
         ]
 
