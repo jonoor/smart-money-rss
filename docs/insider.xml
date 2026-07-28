@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel>
+    <title>大股东/高管增减持 — Smart Money</title>
+    <link>https://data.eastmoney.com/center/stock/trade/5.html</link>
+    <description>A股上市公司大股东、董监高持股变动实时披露。信号：高管集体增持→内部人看好；大股东持续减持→警惕。</description>
+    <language>zh-CN</language>
+    <lastBuildDate>Tue, 28 Jul 2026 09:23:55 +0800</lastBuildDate>
+    <item>
+      <title>大股东增减持数据暂不可用 (2026-07-28)</title>
+      <description>数据源暂时不可用。错误: Response ended prematurely</description>
+      <link>https://data.eastmoney.com/center/stock/trade/5.html</link>
+      <guid isPermaLink="false">insider-error-20260728</guid>
+      <pubDate>Tue, 28 Jul 2026 09:23:55 +0800</pubDate>
+    </item>
+  </channel>
+</rss>
