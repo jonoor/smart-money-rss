@@ -35,18 +35,6 @@ jobs:
       - name: Generate RSS feeds
         run: python generate_rss.py
 
-      - name: Commit and push updated RSS files
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Auto-update RSS feeds [$(date +'%Y-%m-%d')]"
-            git push
-          fi
-
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
