@@ -322,6 +322,46 @@ def generate_northbound_rss():
 
 
 # ── 2. 大股东/高管增减持 ────────────────────────────────────────────────────────
+# Focus filter: only show meaningful moves (>100万 RMB, real change data, tech/leader priority)
+
+# Industry keyword mapping for tagging (enrichment)
+INDUSTRY_TAGS = {
+    "科技/半导体": ["中芯", "海光", "北方华创", "韦尔", "兆易", "紫光", "长电", "通富", "华天",
+                 "寒武纪", "海思", "龙芯", "圣邦", "卓胜微", "汇顶", "澜起", "中微"],
+    "新能源": ["宁德", "比亚迪", "隆基", "通威", "阳光", "晶科", "晶澳", "天合", "TCL中环",
+             "亿纬", "恩捷", "天赐", "赣锋", "天齐", "璞泰来", "迈为", "固德威", "锦浪"],
+    "AI/软件": ["科大讯飞", "金山", "用友", "广联达", "深信服", "宝信", "浪潮", "中科曙光",
+              "紫光股份", "恒生", "同花顺", "东方财富", "三六零", "昆仑万维", "万兴"],
+    "医药/生物": ["恒瑞", "迈瑞", "药明", "智飞", "长春高新", "爱尔", "片仔癀", "云南白药",
+                "复星", "沃森", "康泰", "凯莱英", "泰格", "康龙", "昭衍"],
+    "金融": ["招商", "平安", "兴业", "宁波", "中信", "光大", "华泰", "国泰君安",
+           "东方财富", "同花顺", "中金", "广发", "海通", "中国人保", "中国人寿"],
+    "消费电子": ["立讯", "歌尔", "蓝思", "欧菲", "领益", "鹏鼎", "工业富联", "大族激光",
+              "京东方", "TCL", "传音", "小米", "舜宇"],
+    "汽车": ["比亚迪", "长城", "吉利", "长安", "上汽", "广汽", "福耀", "华域",
+           "德赛", "拓普", "伯特利", "三花", "科博达"],
+}
+
+
+def get_stock_tags(name, code):
+    """Return list of industry/concept tags for a stock name."""
+    tags = []
+    for tag, keywords in INDUSTRY_TAGS.items():
+        for kw in keywords:
+            if kw in name:
+                tags.append(tag)
+                break
+    # Prioritize large-cap by stock code pattern (rough proxy)
+    large_cap_codes = {
+        "600519", "600036", "601398", "601288", "601857", "601628",
+        "600276", "600309", "600900", "600438", "601012", "601888",
+        "603259", "601318", "601066", "603288", "600809", "600585",
+        "000858", "000333", "002594", "002415", "300750", "300760",
+        "300124", "300274", "300122", "300014", "300408", "300433",
+    }
+    if str(code) in large_cap_codes:
+        tags.append("龙头")
+    return list(set(tags))
 
 
 def generate_insider_rss():
@@ -331,76 +371,146 @@ def generate_insider_rss():
 
     try:
         df = ak.stock_ggcg_em()
-
-        col_map = {
-            "代码": "code", "名称": "name", "最新价": "price",
-            "涨跌幅": "pct_chg", "股东名称": "shareholder",
-            "增减持信息-变动方向": "direction",
-            "增减持信息-变动数量": "change_amount",
-            "增减持信息-占总股本比例": "pct_total",
-            "增减持信息-占流通股比例": "pct_float",
-            "变动截止日-持股数量": "shares_after",
-            "变动起始日": "start_date",
-            "变动截止日": "end_date", "公告日": "announce_date"
-        }
-        existing_cols = {k: v for k, v in col_map.items() if k in df.columns}
-        df = df.rename(columns=existing_cols)
+        # NOTE: On Windows, column names from AKShare may have encoding issues.
+        # Use positional iloc access for robustness.
+        # Column layout (stable per AKShare stock_ggcg_em):
+        #  0=代码, 1=名称, 2=最新价, 3=涨跌幅, 4=股东名称,
+        #  5=增减持信息-变动方向, 6=增减持信息-变动数量,
+        #  7=增减持信息-占总股本比例, 8=增减持信息-占流通股比例,
+        #  9=变动截止日-持股数量, 10=变动截止日-占总股本比例,
+        #  11=变动截止日-占流通股比例, 12=???, 13=变动起始日,
+        #  14=变动截止日, 15=公告日
+        if len(df.columns) < 16:
+            # Fallback: try old column-name-based rename
+            col_map = {
+                "代码": "code", "名称": "name", "最新价": "price",
+                "涨跌幅": "pct_chg", "股东名称": "shareholder",
+                "增减持信息-变动方向": "direction",
+                "增减持信息-变动数量": "change_amount",
+                "增减持信息-占总股本比例": "pct_total",
+                "增减持信息-占流通股比例": "pct_float",
+                "变动起始日": "start_date",
+                "变动截止日": "end_date", "公告日": "announce_date"
+            }
+            existing_cols = {k: v for k, v in col_map.items() if k in df.columns}
+            df = df.rename(columns=existing_cols)
+            has_pos = False
+        else:
+            has_pos = True
 
         today = pd.Timestamp.now()
         cutoff = today - pd.Timedelta(days=LOOKBACK_DAYS_INSIDER)
 
-        for date_col in ["announce_date", "end_date", "start_date"]:
-            if date_col in df.columns:
-                try:
-                    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                except Exception:
-                    continue
+        # Date filter
+        if has_pos:
+            # col15 = 公告日, col14 = 变动截止日, col13 = 变动起始日
+            df["announce_date"] = pd.to_datetime(df.iloc[:, 15], errors="coerce")
+            df["end_date"] = pd.to_datetime(df.iloc[:, 14], errors="coerce")
+            df["start_date"] = pd.to_datetime(df.iloc[:, 13], errors="coerce")
+        else:
+            for date_col in ["announce_date", "end_date", "start_date"]:
+                if date_col in df.columns:
+                    try:
+                        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+                    except Exception:
+                        continue
 
+        # Apply cutoff
         if "announce_date" in df.columns:
             df = df[df["announce_date"] >= cutoff]
         elif "end_date" in df.columns:
             df = df[df["end_date"] >= cutoff]
 
-        if "change_amount" in df.columns:
-            df["change_amount_num"] = pd.to_numeric(df["change_amount"], errors="coerce")
-            df = df[df["change_amount_num"].abs() > 10000]
+        # Extract fields
+        if has_pos:
+            df["code"] = df.iloc[:, 0]
+            df["name"] = df.iloc[:, 1].astype(str)
+            df["price"] = pd.to_numeric(df.iloc[:, 2], errors="coerce")
+            df["shareholder"] = df.iloc[:, 4].astype(str)
+            df["direction"] = df.iloc[:, 5].astype(str)
+            df["change_amount"] = pd.to_numeric(df.iloc[:, 6], errors="coerce")
+            df["pct_total"] = pd.to_numeric(df.iloc[:, 7], errors="coerce")
+            df["pct_float"] = pd.to_numeric(df.iloc[:, 8], errors="coerce")
 
-        sort_col = "announce_date" if "announce_date" in df.columns else "end_date"
-        if sort_col in df.columns:
-            df = df.sort_values(sort_col, ascending=False)
+        # Numeric conversions
+        df["change_amount_num"] = pd.to_numeric(df["change_amount"], errors="coerce")
+        df["price_num"] = pd.to_numeric(df["price"], errors="coerce")
+
+        # ── FILTERS ──
+        # 1. Must have real change data (>0 shares)
+        df = df[df["change_amount_num"] > 0]
+
+        # Compute change amount in 万股 and RMB value (万元)
+        # NOTE: AKShare stock_ggcg_em returns change_amount in 万股 (not 股)
+        df["change_num_wan"] = df["change_amount_num"]
+        df["change_value_wan"] = df["change_num_wan"] * df["price_num"]
+
+        # 2. Must have meaningful monetary value (>50万元)
+        df = df[df["change_value_wan"] >= 50]
+
+        # 3. Must have direction (增持/减持)
+        df = df[df["direction"].isin(["增持", "减持"])]
+
+        if df.empty:
+            items.append({
+                "title": f"大股东增减持 — {TODAY_STR} 无符合条件的大额变动",
+                "description": f"今日无变动金额>=100万元的大股东/高管增减持记录。过滤条件：变动数量>0、变动金额>=100万元、含明确方向。",
+                "link": "https://data.eastmoney.com/center/stock/trade/5.html",
+                "guid": f"insider-empty-{TODAY_STR}",
+                "pubDate": rfc2822_date(datetime.now())
+            })
+            write_rss("insider.xml",
+                      "大股东/高管增减持 — Smart Money",
+                      "https://data.eastmoney.com/center/stock/trade/5.html",
+                      "A股上市公司大股东、董监高持股变动实时披露。已过滤：只保留变动金额>=100万元、有明确方向、科技/龙头/热门行业优先。",
+                      items)
+            csv_cols = ["抓取日期", "公告日", "股票代码", "股票名称", "股东名称",
+                        "变动方向", "变动数量_股", "变动数量_万股", "变动金额_万元",
+                        "占总股本比例", "占流通股比例", "最新价", "变动截止日", "标签"]
+            total = append_csv("insider.csv", csv_cols, csv_rows, unique_key_col=None)
+            print(f"  [CSV] insider.csv ({total} total rows)")
+            return
+
+        # Sort by monetary value (largest first), then by date
+        df = df.sort_values(["change_value_wan", "announce_date"],
+                            ascending=[False, False], na_position="last")
+
+        # Tag each row and prioritize rows with tags
+        df["tags"] = df.apply(lambda r: get_stock_tags(str(r.get("name", "")), str(r.get("code", ""))), axis=1)
+        df["tag_count"] = df["tags"].apply(len)
+        # Secondary sort: rows with tags first, then by value
+        df = df.sort_values(["tag_count", "change_value_wan", "announce_date"],
+                            ascending=[False, False, False], na_position="last")
 
         for _, row in df.head(MAX_ITEMS_PER_FEED).iterrows():
-            code = row.get("code", "")
-            name = row.get("name", "")
-            shareholder = row.get("shareholder", "未知")
-            direction = row.get("direction", "")
+            code = str(row.get("code", ""))
+            name = str(row.get("name", ""))
+            shareholder = str(row.get("shareholder", "未知"))
+            direction = str(row.get("direction", ""))
             change_amount = row.get("change_amount", 0)
             pct_total = row.get("pct_total", "")
             pct_float = row.get("pct_float", "")
             price = row.get("price", "")
             announce_date = row.get("announce_date", "")
-
-            try:
-                change_num = float(change_amount) / 10000
-            except (ValueError, TypeError):
-                change_num = 0
+            change_num = row.get("change_num_wan", 0)
+            change_val = row.get("change_value_wan", 0)
+            tags = row.get("tags", [])
 
             direction_label = {"增持": "增持", "减持": "减持"}.get(direction, direction)
+            arrow = "▲" if direction_label == "增持" else "▼"
+            tag_str = f" [{'/'.join(tags)}]" if tags else ""
 
-            # Build title based on whether there's actual change data
-            if change_num > 0:
-                arrow = "▲" if direction_label == "增持" else "▼"
-                title = f"[{arrow}{direction_label}] {name}({code}) — {shareholder} 变动{change_num:.2f}万股"
+            # Title: concise with amount + value + tags
+            if change_val >= 1000:
+                val_str = f"¥{change_val/10000:.2f}亿"
             else:
-                title = f"[变动待确认] {name}({code}) — {shareholder}"
+                val_str = f"¥{change_val:.0f}万"
 
-            # Compact description with only key info
-            desc_parts = [f"<b>{name} ({code})</b> | {shareholder}"]
-            if change_num > 0:
-                arrow = "▲" if direction_label == "增持" else "▼"
-                desc_parts.append(f"<b>{arrow} {direction_label} {change_num:.2f} 万股</b>")
-            else:
-                desc_parts.append("<i>变动数量待确认或数据未披露</i>")
+            title = f"[{arrow}{direction_label}{tag_str}] {name}({code}) {change_num:.1f}万股/{val_str}"
+
+            # Description
+            desc_parts = [f"<b>{name} ({code})</b>{tag_str} | {shareholder}"]
+            desc_parts.append(f"<b>{arrow} {direction_label} {change_num:.2f} 万股 | 约 {val_str}</b>")
 
             if price and str(price) not in ("nan", "NaT", ""):
                 try:
@@ -445,6 +555,10 @@ def generate_insider_rss():
                 "pubDate": date_str_to_rfc2822(announce_date)
             })
 
+            end_date_val = row.get("end_date", "")
+            if has_pos and pd.notna(end_date_val):
+                end_date_val = str(end_date_val).split(" ")[0] if " " in str(end_date_val) else str(end_date_val)
+
             csv_rows.append({
                 "抓取日期": TODAY_STR,
                 "公告日": str(announce_date),
@@ -454,10 +568,12 @@ def generate_insider_rss():
                 "变动方向": direction,
                 "变动数量_股": change_amount,
                 "变动数量_万股": round(change_num, 2) if isinstance(change_num, (int, float)) else "",
+                "变动金额_万元": round(change_val, 2) if isinstance(change_val, (int, float)) else "",
                 "占总股本比例": pct_total,
                 "占流通股比例": pct_float,
                 "最新价": price,
-                "变动截止日": str(row.get("end_date", "")),
+                "变动截止日": str(end_date_val) if end_date_val else "",
+                "标签": "/".join(tags) if tags else "",
             })
 
     except Exception as e:
@@ -474,12 +590,12 @@ def generate_insider_rss():
     write_rss("insider.xml",
               "大股东/高管增减持 — Smart Money",
               "https://data.eastmoney.com/center/stock/trade/5.html",
-              "A股上市公司大股东、董监高持股变动实时披露。信号：高管集体增持→内部人看好；大股东持续减持→警惕。",
+              "A股上市公司大股东、董监高持股变动实时披露。已过滤：只保留变动金额>=100万元、有明确方向、科技/龙头/热门行业优先。",
               items)
 
     csv_cols = ["抓取日期", "公告日", "股票代码", "股票名称", "股东名称",
-                "变动方向", "变动数量_股", "变动数量_万股", "占总股本比例",
-                "占流通股比例", "最新价", "变动截止日"]
+                "变动方向", "变动数量_股", "变动数量_万股", "变动金额_万元",
+                "占总股本比例", "占流通股比例", "最新价", "变动截止日", "标签"]
     total = append_csv("insider.csv", csv_cols, csv_rows, unique_key_col=None)
     print(f"  [CSV] insider.csv ({total} total rows)")
 
@@ -701,35 +817,77 @@ def generate_market_heat_rss():
     - 两市成交额 (上证+深证 daily turnover)
     - 融资融券余额 (margin trading balance)
     用于判断市场情绪和资金活跃度。
+    增加与昨日对比，让数据变化一目了然。
     """
     print("\n[5/5] Generating Market Heat RSS + CSV...")
     items = []
     csv_rows = []
     csv_row = {"日期": TODAY_STR}
 
+    # ── Load yesterday's data for comparison ──
+    prev_day_data = {}
+    csv_path = os.path.join(CSV_DIR, "market-heat.csv")
+    if os.path.exists(csv_path):
+        try:
+            hist_df = pd.read_csv(csv_path)
+            if not hist_df.empty:
+                # Get the most recent row that is not today
+                hist_df = hist_df[hist_df["日期"] != TODAY_STR]
+                if not hist_df.empty:
+                    prev = hist_df.iloc[-1]
+                    prev_day_data = {
+                        "两市合计成交额_亿": prev.get("两市合计成交额_亿", None),
+                        "融资融券余额_亿": prev.get("融资融券余额_亿", None),
+                        "沪市成交额_亿": prev.get("沪市成交额_亿", None),
+                        "深市成交额_亿": prev.get("深市成交额_亿", None),
+                        "融资余额_亿": prev.get("融资余额_亿", None),
+                    }
+        except Exception:
+            pass
+
+    def pct_change(curr, prev):
+        try:
+            c = float(curr)
+            p = float(prev)
+            if p and p > 0:
+                return round((c - p) / p * 100, 2)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def fmt_change(curr, prev, unit="亿"):
+        """Return formatted string like '+5.2% (+892亿)' or '' if no prev."""
+        pc = pct_change(curr, prev)
+        if pc is None:
+            return ""
+        sign = "+" if pc >= 0 else ""
+        try:
+            diff = round(float(curr) - float(prev), 1)
+            diff_sign = "+" if diff >= 0 else ""
+            return f"{sign}{pc}% ({diff_sign}{diff}{unit})"
+        except (ValueError, TypeError):
+            return f"{sign}{pc}%"
+
     try:
         # ── SSE turnover (stock_sse_deal_daily) ──
-        # Columns: 0=项目, 1=股票(总), 2=主板A, 3=主板B, 4=科创板, 5=股票回购
-        # Row 3 = 成交金额 (value already in 亿)
         try:
             sse = ak.stock_sse_deal_daily()
             if len(sse) > 3:
                 turnover_row = sse.iloc[3]
                 item_name = str(turnover_row.iloc[0])
                 if "金额" in item_name:
-                    raw = turnover_row.iloc[1]  # 股票 total, already 亿
+                    raw = turnover_row.iloc[1]
                     sh_turnover = round(float(raw), 2)
                     csv_row["沪市成交额_亿"] = sh_turnover
         except Exception as e:
             print(f"    [WARN] SSE turnover: {e}")
 
         # ── SZSE turnover (stock_szse_summary) ──
-        # Row 0 = 股票, col 2 = 成交金额 (in 元)
         try:
             szse = ak.stock_szse_summary()
             if len(szse) > 0:
-                raw = szse.iloc[0, 2]  # row 0, col 2 = 成交金额(元)
-                sz_turnover = round(float(raw) / 100000000, 2)  # 元→亿
+                raw = szse.iloc[0, 2]
+                sz_turnover = round(float(raw) / 100000000, 2)
                 csv_row["深市成交额_亿"] = sz_turnover
         except Exception as e:
             print(f"    [WARN] SZSE turnover: {e}")
@@ -740,13 +898,11 @@ def generate_market_heat_rss():
         if sh_t is not None and sz_t is not None:
             csv_row["两市合计成交额_亿"] = round(float(sh_t) + float(sz_t), 2)
         elif sh_t is not None:
-            csv_row["两市合计成交额_亿"] = round(float(sh_t) * 2.5, 0)  # rough estimate
+            csv_row["两市合计成交额_亿"] = round(float(sh_t) * 2.5, 0)
         elif sz_t is not None:
             csv_row["两市合计成交额_亿"] = round(float(sz_t) * 2, 0)
 
         # ── 融资融券 ──
-        # SSE margin: stock_margin_detail_sse (T+1 delay, try today/yesterday)
-        # Column positions: 0=日期, 1=代码, 2=简称, 3=融资余额(元), 4=融资买入额(元)
         margin_dates = [TODAY_COMPACT]
         margin_dates.append((datetime.now() - timedelta(days=1)).strftime("%Y%m%d"))
         margin_dates.append((datetime.now() - timedelta(days=2)).strftime("%Y%m%d"))
@@ -768,49 +924,88 @@ def generate_market_heat_rss():
         if sse_margin_buy is not None and pd.notna(sse_margin_buy) and sse_margin_buy > 0:
             csv_row["融资买入额_亿"] = round(float(sse_margin_buy) / 100000000, 2)
 
-        # SZSE margin: stock_margin_szse gives aggregate
-        # Columns (garbled): 0=日期? 1=融资余额(亿), 2=融券余量, 3=融券余额(亿), 4=?, 5=融资融券余额(亿)
         try:
             sz_margin = ak.stock_margin_szse()
             if not sz_margin.empty:
-                sz_bal = sz_margin.iloc[0, 1]  # 融资余额 (亿)
-                sz_short_bal = sz_margin.iloc[0, 3]  # 融券余额 (亿)
-                sz_total = sz_margin.iloc[0, 5]  # 融资融券余额 (亿)
+                sz_bal = sz_margin.iloc[0, 1]
+                sz_short_bal = sz_margin.iloc[0, 3]
+                sz_total = sz_margin.iloc[0, 5]
                 csv_row["融券余额_亿"] = round(float(sz_short_bal), 2)
                 csv_row["融资融券余额_亿"] = round(float(sz_total), 2)
-                # If SSE margin wasn't populated, use SZSE data for margin columns
                 if "融资余额_亿" not in csv_row:
                     csv_row["融资余额_亿"] = round(float(sz_bal), 2)
         except Exception as e:
             print(f"    [WARN] SZSE margin: {e}")
 
-        # Build RSS item
+        # Build RSS item WITH day-over-day comparison
         total_vol = csv_row.get("两市合计成交额_亿", "N/A")
         margin_bal = csv_row.get("融资融券余额_亿", "N/A")
+
+        # Changes vs yesterday
+        vol_change = fmt_change(total_vol, prev_day_data.get("两市合计成交额_亿"))
+        margin_change = fmt_change(margin_bal, prev_day_data.get("融资融券余额_亿"))
+        sh_change = fmt_change(sh_t, prev_day_data.get("沪市成交额_亿"))
+        sz_change = fmt_change(sz_t, prev_day_data.get("深市成交额_亿"))
 
         # Heat assessment
         heat = ""
         try:
-            if float(total_vol) > 15000:
+            tv = float(total_vol)
+            if tv > 15000:
                 heat = "火热 (>1.5万亿) — 市场活跃度高，注意过热风险"
-            elif float(total_vol) > 10000:
+            elif tv > 10000:
                 heat = "中等偏热 (1.0-1.5万亿) — 正常偏活跃"
-            elif float(total_vol) > 6000:
+            elif tv > 6000:
                 heat = "正常 (0.6-1.0万亿) — 市场平稳"
             else:
                 heat = "冷清 (<6000亿) — 市场情绪低迷"
         except (ValueError, TypeError):
             heat = "数据暂缺"
 
-        title = f"市场热度 {TODAY_STR}: 两市成交 {total_vol} 亿 | 两融 {margin_bal} 亿 | {heat.partition('—')[0].strip()}"
-        desc_parts = [
-            f"<b>市场热度 {TODAY_STR}</b>",
-            f"沪市: {csv_row.get('沪市成交额_亿', 'N/A')} 亿 | 深市: {csv_row.get('深市成交额_亿', 'N/A')} 亿",
-            f"<b>两市合计: {total_vol} 亿</b>",
-            f"融资余额: {csv_row.get('融资余额_亿', 'N/A')} 亿 | 融资买入: {csv_row.get('融资买入额_亿', 'N/A')} 亿",
-            f"融券余额: {csv_row.get('融券余额_亿', 'N/A')} 亿 | 两融合计: {margin_bal} 亿",
-            f"判断: {heat}",
-        ]
+        # Title with change indicator
+        change_indicators = []
+        if vol_change:
+            change_indicators.append(f"成交{vol_change}")
+        if margin_change:
+            change_indicators.append(f"两融{margin_change}")
+        change_str = f" | {' | '.join(change_indicators)}" if change_indicators else ""
+
+        title = f"市场热度 {TODAY_STR}: 两市成交 {total_vol} 亿 | 两融 {margin_bal} 亿{change_str} | {heat.partition('—')[0].strip()}"
+
+        desc_parts = [f"<b>市场热度 {TODAY_STR}</b>"]
+        sh_line = f"沪市: {csv_row.get('沪市成交额_亿', 'N/A')} 亿"
+        if sh_change:
+            sh_line += f" <i>({sh_change})</i>"
+        sz_line = f"深市: {csv_row.get('深市成交额_亿', 'N/A')} 亿"
+        if sz_change:
+            sz_line += f" <i>({sz_change})</i>"
+        desc_parts.append(f"{sh_line} | {sz_line}")
+
+        total_line = f"<b>两市合计: {total_vol} 亿</b>"
+        if vol_change:
+            total_line += f" <i>较昨日 {vol_change}</i>"
+        desc_parts.append(total_line)
+
+        margin_line = f"融资余额: {csv_row.get('融资余额_亿', 'N/A')} 亿 | 融资买入: {csv_row.get('融资买入额_亿', 'N/A')} 亿"
+        desc_parts.append(margin_line)
+
+        margin_total_line = f"融券余额: {csv_row.get('融券余额_亿', 'N/A')} 亿 | 两融合计: {margin_bal} 亿"
+        if margin_change:
+            margin_total_line += f" <i>较昨日 {margin_change}</i>"
+        desc_parts.append(margin_total_line)
+
+        desc_parts.append(f"判断: {heat}")
+
+        # Additional insight if we have prev data
+        if vol_change and prev_day_data.get("两市合计成交额_亿"):
+            try:
+                vol_pct = pct_change(total_vol, prev_day_data["两市合计成交额_亿"])
+                if vol_pct and vol_pct > 10:
+                    desc_parts.append("<b>信号: 成交额显著放大，资金活跃度提升</b>")
+                elif vol_pct and vol_pct < -10:
+                    desc_parts.append("<b>信号: 成交额明显萎缩，市场情绪降温</b>")
+            except Exception:
+                pass
 
         items.append({
             "title": escape_xml(title),
@@ -836,7 +1031,7 @@ def generate_market_heat_rss():
     write_rss("market-heat.xml",
               "市场热度（成交额+融资融券）— Smart Money",
               "https://data.eastmoney.com/cjsj/hsgt.html",
-              "A股市场热度指标：两市成交额 + 融资融券余额。信号：成交额持续放大→资金涌入；两融余额上升→杠杆资金看多。用于判断市场顶底。",
+              "A股市场热度指标：两市成交额 + 融资融券余额。增加与昨日对比变化，信号：成交额持续放大→资金涌入；两融余额上升→杠杆资金看多。",
               items)
 
     csv_cols = ["日期", "沪市成交额_亿", "深市成交额_亿", "两市合计成交额_亿",
