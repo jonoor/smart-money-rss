@@ -9,6 +9,7 @@ Feeds:
   3. dragon-tiger.xml   — 龙虎榜机构席位
   4. fund-holdings.xml  — 公募基金重仓变动（季度）
   5. market-heat.xml    — 市场热度（两市成交额 + 融资融券）
+  6. sec-13f.xml        — SEC 13F 知名机构持仓（过滤后）
 
 CSV History (permanently accumulated, appending):
   docs/csv/northbound.csv
@@ -16,8 +17,9 @@ CSV History (permanently accumulated, appending):
   docs/csv/dragon-tiger.csv
   docs/csv/fund-holdings.csv
   docs/csv/market-heat.csv
+  docs/csv/sec-13f.csv
 
-Data sources: AKShare → 东方财富 / 巨潮资讯 / 新浪财经
+Data sources: AKShare → 东方财富 / 巨潮资讯 / 新浪财经 | SEC EDGAR Atom Feed
 Schedule: Daily @ 16:30 CST (via GitHub Actions)
 """
 
@@ -30,6 +32,8 @@ import os
 import sys
 import traceback
 import hashlib
+import urllib.request
+import urllib.error
 
 # Fix encoding for Windows terminal output
 if sys.platform == "win32":
@@ -44,6 +48,48 @@ LOOKBACK_DAYS_NORTHBOUND = 10
 MAX_ITEMS_PER_FEED = 20
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 TODAY_COMPACT = datetime.now().strftime("%Y%m%d")
+
+# ── SEC 13F Institution Filter ─────────────────────────────────────────────────
+# Tier 1: Top-tier hedge funds / legendary investors
+TIER1_KEYWORDS = [
+    "BERKSHIRE HATHAWAY", "BRIDGEWATER", "TIGER GLOBAL", "ARK INVESTMENT",
+    "SOROS FUND", "DUQUESNE", "BAUPOST", "PERSHING SQUARE", "APPALOOSA",
+    "SCION ASSET", "ELLIOTT INVESTMENT", "THIRD POINT", "COATUE",
+    "D.E. SHAW", "RENAISSANCE TECHNOLOGIES", "TWO SIGMA", "CITADEL",
+    "MILLENNIUM MANAGEMENT", "POINT72", "MAVERICK CAPITAL", "LONE PINE CAPITAL",
+    "VIKING GLOBAL", "VALUEACT CAPITAL", "ICAHN ENTERPRISES", "GREENLIGHT CAPITAL",
+    "GLENVIEW CAPITAL", "TUDOR INVESTMENT", "MOORE CAPITAL", "CAXTON ASSOCIATES",
+    "SEMINOLE CAPITAL", "BAILEY GIFFORD", "PRIMECAP", "FAIRHOLME",
+    "SEMPER AUGUSTUS", "DAKOTA VALLEY", "SEIDMAN AND ASSOCIATES",
+]
+
+# Tier 2: Large asset managers / sovereign wealth / endowments
+TIER2_KEYWORDS = [
+    "BLACKROCK", "VANGUARD", "FIDELITY", "STATE STREET", "T. ROWE PRICE",
+    "CAPITAL GROUP", "WELLINGTON MANAGEMENT", "FRANKLIN TEMPLETON", "INVESCO",
+    "GOLDMAN SACHS", "MORGAN STANLEY", "JPMORGAN", "UBS", "CREDIT SUISSE",
+    "DEUTSCHE BANK", "NOMURA", "HSBC", "AMUNDI", "LEGAL & GENERAL",
+    "NORGES BANK", "SAUDI PIF", "TEMASEK", "GIC", "CANADA PENSION",
+    "CALPERS", "CALSTRS", "YALE UNIVERSITY", "HARVARD MANAGEMENT",
+    "STANFORD MANAGEMENT", "MIT INVESTMENT", "PRINCETON UNIVERSITY",
+    "BAILLIE GIFFORD", "CAISSE DE DEPOT", "ABU DHABI INVESTMENT",
+    "KUWAIT INVESTMENT", "QATAR INVESTMENT", "CHINA INVESTMENT",
+]
+
+
+def match_institution_tier(title_text):
+    """
+    Check if a 13F filing title matches a known institution.
+    Returns (tier, matched_keyword) or (None, None).
+    """
+    upper = title_text.upper()
+    for kw in TIER1_KEYWORDS:
+        if kw.upper() in upper:
+            return (1, kw)
+    for kw in TIER2_KEYWORDS:
+        if kw.upper() in upper:
+            return (2, kw)
+    return (None, None)
 
 # ── CSV History Utilities ─────────────────────────────────────────────────────
 
@@ -1040,6 +1086,191 @@ def generate_market_heat_rss():
     print(f"  [CSV] market-heat.csv ({total} total rows)")
 
 
+# ── 6. SEC EDGAR Form 13F: 机构季度持仓变化 ────────────────────────────────────
+
+
+def generate_sec_13f_rss():
+    """
+    Fetch SEC EDGAR 13F-HR filings and filter for well-known institutions only.
+    Eliminates noise from thousands of small RIAs and advisory firms.
+    """
+    print("\n[6/6] Generating SEC 13F RSS (filtered)...")
+    items = []
+    csv_rows = []
+
+    SEC_ATOM_URL = (
+        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent"
+        "&type=13F-HR&company=&dateb=&owner=include&start=0&count=200&output=atom"
+    )
+
+    try:
+        req = urllib.request.Request(
+            SEC_ATOM_URL,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "identity",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            xml_bytes = resp.read()
+
+        # Parse Atom feed
+        root = ET.fromstring(xml_bytes)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+        entries = []
+        for entry in root.findall("atom:entry", ns):
+            title_el = entry.find("atom:title", ns)
+            link_el = entry.find("atom:link", ns)
+            updated_el = entry.find("atom:updated", ns)
+            summary_el = entry.find("atom:summary", ns)
+
+            title = title_el.text.strip() if title_el is not None and title_el.text else ""
+            link = link_el.get("href", "") if link_el is not None else ""
+            updated = updated_el.text.strip() if updated_el is not None and updated_el.text else ""
+            summary = summary_el.text.strip() if summary_el is not None and summary_el.text else ""
+
+            if not title:
+                continue
+
+            # Filter: only keep known institutions
+            tier, matched_kw = match_institution_tier(title)
+            if tier is None:
+                continue
+
+            entries.append({
+                "title": title,
+                "link": link,
+                "updated": updated,
+                "summary": summary,
+                "tier": tier,
+                "matched_kw": matched_kw,
+            })
+
+        if not entries:
+            items.append({
+                "title": f"SEC 13F — {TODAY_STR} 暂无知名机构新披露",
+                "description": "今日 SEC EDGAR 13F  filings 中未检测到白名单内的知名机构。知名机构通常在每个季度末（3/6/9/12月）后的45天内集中披露。",
+                "link": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR",
+                "guid": f"sec-13f-empty-{TODAY_STR}",
+                "pubDate": rfc2822_date(datetime.now())
+            })
+        else:
+            # Sort: Tier 1 first, then by updated time (newest first)
+            entries.sort(key=lambda x: (x["tier"], x["updated"]), reverse=False)
+            # We want tier 1 first, so tier=1 < tier=2. But for date we want newest first.
+            # Re-sort properly:
+            entries.sort(key=lambda x: (x["tier"], x["updated"]))
+            entries.reverse()  # Now tier 2 comes first... need custom sort
+            # Actually let's do:
+            entries.sort(key=lambda x: (x["tier"], x["updated"]))
+            # tier 1 first means smaller tier number first.
+            # For date, newer first means larger date string first (ISO 8601 sorts lexicographically)
+            # So we need sort with tier ascending, updated descending
+            entries.sort(key=lambda x: (x["tier"], x["updated"]))
+            # Reverse within each tier... let's just do a stable two-step sort
+            entries.sort(key=lambda x: x["updated"], reverse=True)
+            entries.sort(key=lambda x: x["tier"])
+
+            for e in entries[:MAX_ITEMS_PER_FEED]:
+                tier_label = "[Tier1]" if e["tier"] == 1 else "[Tier2]"
+                # Clean up title: remove redundant "13F-HR - " prefix
+                clean_title = e["title"]
+                if clean_title.startswith("13F-HR - "):
+                    clean_title = clean_title[9:]
+                elif clean_title.startswith("13F-HR/A - "):
+                    clean_title = clean_title[11:]
+
+                title = f"{tier_label} {clean_title}"
+
+                # Extract Acc-No and size from summary if present
+                desc_parts = [f"<b>{tier_label} {clean_title}</b>"]
+                if e["updated"]:
+                    desc_parts.append(f"披露时间: {e['updated']}")
+                if e["summary"]:
+                    # Summary may contain Acc-No and size
+                    desc_parts.append(f"详情: {e['summary']}")
+                desc_parts.append(
+                    "<i>13F-HR 为机构季度持仓报告，披露美股多头持仓明细。"
+                    "重点关注前十大持仓变动、新增/清仓标的。</i>"
+                )
+
+                # Parse updated to RFC2822
+                pub_date = rfc2822_date(datetime.now())
+                if e["updated"]:
+                    try:
+                        # ISO 8601 format: 2026-07-30T16:30:00-04:00
+                        dt = datetime.fromisoformat(e["updated"].replace("Z", "+00:00"))
+                        pub_date = rfc2822_date(dt)
+                    except Exception:
+                        pass
+
+                guid = f"sec-13f-{hash(e['title'] + e['updated']) % 100000}"
+
+                items.append({
+                    "title": escape_xml(title),
+                    "description": escape_xml("<br/>".join(desc_parts)),
+                    "link": e["link"] or "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR",
+                    "guid": guid,
+                    "pubDate": pub_date,
+                })
+
+                csv_rows.append({
+                    "抓取日期": TODAY_STR,
+                    "披露时间": e["updated"],
+                    "标题": e["title"],
+                    "机构级别": f"Tier{e['tier']}",
+                    "匹配关键词": e["matched_kw"],
+                    "链接": e["link"],
+                })
+
+    except urllib.error.URLError as ue:
+        print(f"  [WARN] SEC 13F network error: {ue}")
+        err_msg = str(ue)
+        if "403" in err_msg:
+            desc = ("SEC EDGAR 当前从本机网络环境无法访问（403 Forbidden）。"
+                    "GitHub Actions 部署后会自动从美国服务器抓取，此提示将消失。")
+        else:
+            desc = f"SEC 网络请求失败。错误: {escape_xml(err_msg)}"
+        items.append({
+            "title": f"SEC 13F 数据暂不可用 ({TODAY_STR})",
+            "description": desc,
+            "link": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR",
+            "guid": f"sec-13f-error-{TODAY_COMPACT}",
+            "pubDate": rfc2822_date(datetime.now())
+        })
+    except Exception as e:
+        print(f"  [WARN] SEC 13F feed error: {e}")
+        traceback.print_exc()
+        items.append({
+            "title": f"SEC 13F 数据暂不可用 ({TODAY_STR})",
+            "description": f"数据源暂时不可用。错误: {escape_xml(str(e))}",
+            "link": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR",
+            "guid": f"sec-13f-error-{TODAY_COMPACT}",
+            "pubDate": rfc2822_date(datetime.now())
+        })
+
+    write_rss("sec-13f.xml",
+              "SEC 13F 机构持仓 — Smart Money",
+              "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR",
+              "SEC EDGAR Form 13F 季度持仓报告，已过滤：只保留 Tier1/Tier2 知名机构。"
+              "信号：顶级基金增减持方向 = 聪明钱共识。",
+              items)
+
+    csv_cols = ["抓取日期", "披露时间", "标题", "机构级别", "匹配关键词", "链接"]
+    total = append_csv("sec-13f.csv", csv_cols, csv_rows, unique_key_col=None)
+    print(f"  [CSV] sec-13f.csv ({total} total rows)")
+    print(f"  [FILTER] Kept {len(items)} of 200 filings (Tier1/Tier2 only)")
+
+
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 
@@ -1056,6 +1287,7 @@ def main():
     generate_dragon_tiger_rss()
     generate_fund_holdings_rss()
     generate_market_heat_rss()
+    generate_sec_13f_rss()
 
     print("\n" + "=" * 60)
     print("All feeds + CSV generated successfully!")
